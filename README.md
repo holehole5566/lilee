@@ -57,7 +57,7 @@ A small complete scenario is loaded and evaluated under its schedule-row lock. S
 
 We chose one `service_steps` row per path visit, keyed by `(service_id, sequence_index)`, rather than storing the whole path as JSONB on `services`. Rows preserve order and repeated visits, and `node_id` has a normal FK: deleting or renaming a referenced node ID cannot silently leave a dangling step. This also makes individual steps queryable with SQL. The cost is more rows and a join to load a path; updating a service currently validates the proposed schedule, then deletes and reinserts that service's steps in one transaction instead of patching individual positions.
 
-JSONB would make storing and replacing a whole path simpler, and PostgreSQL can query and index JSONB. But individual node IDs inside a JSONB array cannot use an ordinary column FK; they would need application validation or extra database logic. **Neither approach's FK proves a directed path is valid**: adjacency, endpoint, timing and conflict rules stay in the domain validator. For this small fixed graph, explicit node references and a clear visit order were worth the extra table.
+JSONB would make storing and replacing a whole path simpler, and PostgreSQL can query and index JSONB. But individual node IDs inside a JSONB array cannot use an ordinary column FK; they would need application validation or extra database logic. **A node FK alone does not prove the path is valid**: adjacency, endpoint, timing and conflict rules stay in the domain validator. For this small fixed graph, explicit node references and a clear visit order were worth the extra table.
 
 ## API overview
 
