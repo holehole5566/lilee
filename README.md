@@ -53,6 +53,14 @@ For a service, the stored scheduling inputs are start time, ordered path and dwe
 
 A small complete scenario is loaded and evaluated under its schedule-row lock. Shared fleet/configuration mutations lock manual then auto, revalidate both and advance both revisions. This keeps revision/status and data consistent in one transaction, but coarse-grained whole-scenario evaluation limits write throughput; no large-fleet performance guarantee is made. We chose a pure domain layer over encoding cross-service battery and scheduling logic in SQL so generator trials and unit tests can reuse the same rules without a database.
 
+### Business logic vs data access
+
+- **Data access:** `db.py` defines ORM tables; `repository.py` loads the graph, configuration, vehicles and services into plain objects. Alembic migrations own schema changes.
+- **Business rules:** `domain.py` validates paths and derives times, conflicts and battery; `coverage.py` checks station waiting limits; `generator.py` tries candidate schedules. These modules do not import FastAPI or SQLAlchemy and do not open a DB connection.
+- **Application/API:** `api.py` opens transactions, locks schedule rows, loads data, evaluates a complete candidate and decides whether to save a validated schedule or a manual draft. This use-case orchestration is currently in `api.py`, **not** a separate application module.
+
+Flow: **API → repository load → pure domain evaluation → save policy → repository/ORM write**. `test_domain.py`, `test_coverage.py` and `test_generator.py` construct in-memory inputs to test rules without PostgreSQL; `test_api_integration.py` separately verifies persistence, rollback and locking against a disposable PostgreSQL database. This keeps fast rule tests independent of the storage layer without pretending that unit tests replace DB integration tests.
+
 ### Data-model trade-off: ordered step rows vs JSONB
 
 We chose one `service_steps` row per path visit, keyed by `(service_id, sequence_index)`, rather than storing the whole path as JSONB on `services`. Rows preserve order and repeated visits, and `node_id` has a normal FK: deleting or renaming a referenced node ID cannot silently leave a dangling step. This also makes individual steps queryable with SQL. The cost is more rows and a join to load a path; updating a service currently validates the proposed schedule, then deletes and reinserts that service's steps in one transaction instead of patching individual positions.
