@@ -33,18 +33,25 @@ Manual and auto are **alternative schedules**, not vehicles operating together. 
 
 ## Architecture and data model
 
-A single FastAPI application uses SQLAlchemy/PostgreSQL for persistence and a pure-Python domain engine for path, timeline, conflict and battery rules. The application layer controls transactions, locks and revision checks. PostgreSQL holds:
+A single FastAPI application uses SQLAlchemy/PostgreSQL for persistence and a pure-Python domain engine for path, timeline, conflict and battery rules. The application layer controls transactions, locks and revision checks. PostgreSQL schema (Alembic `001` + `002`; **PK** = primary key, **FK** = foreign key):
 
-| Data | Purpose |
-| --- | --- |
-| `track_nodes`, `track_edges`, `interlocking_groups`, `interlocking_members` | Version-controlled seed for the fixed directed topology: 21 nodes, 28 directed edges and three groups. Runtime loads these rows; the SVG is presentation, not the topology authority. |
-| `block_configs` | Positive traversal seconds per block (initial demo: 60 seconds). |
-| `vehicles(id, name)` | Stable vehicle ID and editable name. Referenced vehicles cannot be deleted. |
-| `schedule` | `id=1` manual and `id=2` auto, each with its own fixed `scenario_start_at`, `revision` and `validation_status`. |
-| `services` | Numeric generated ID, schedule/vehicle FKs and start time. A legacy passenger flag remains in storage for schema compatibility, but new services are always boardable when they stop at a platform. |
-| `service_steps` | Ordered path nodes and platform/Yard dwell seconds; sequence index preserves repeated visits. |
+| Table | Stored columns and DB constraints | Purpose |
+| --- | --- | --- |
+| `schedule` | `id` integer **PK** (`1` manual / `2` auto); `scenario_start_at` timestamptz; `revision` integer ≥ 0; `validation_status` `draft` or `validated`. | Separate alternative schedules, each with a fixed start and revision. |
+| `vehicles` | `id` varchar(40) **PK**; `name` varchar(120). | Shared fleet; ID stays stable while the name can change. |
+| `track_nodes` | `id` varchar(10) **PK**; `kind` `YARD` / `PLATFORM` / `BLOCK`; nullable `station_id` varchar(10). | Fixed topology nodes; `station_id` is a label, **not** a FK to a station table. |
+| `track_edges` | `from_node_id`, `to_node_id`: composite **PK**, each **FK** → `track_nodes.id`. | Directed adjacency; a bidirectional connection has two rows. |
+| `interlocking_groups` | `id` varchar(10) **PK**. | Names of exclusive-use groups. |
+| `interlocking_members` | `group_id` **FK** → `interlocking_groups.id`, `block_id` **FK** → `track_nodes.id`: composite **PK**. | Blocks assigned to each group. |
+| `block_configs` | `block_id` **PK**, **FK** → `track_nodes.id`; `traversal_seconds` integer > 0. | One shared duration per block (seeded at 60 seconds). |
+| `services` | `id` generated integer **PK**; `schedule_id` **FK** → `schedule.id` (indexed, delete restricted); `vehicle_id` **FK** → `vehicles.id` (delete restricted); `start_at` timestamptz; `is_passenger_service` boolean. | A vehicle run in one scenario. The boolean is a legacy compatibility column; new services always allow boarding at visited platforms. |
+| `service_steps` | `service_id` **FK** → `services.id` (cascade delete), `sequence_index` integer ≥ 0: composite **PK**; `node_id` **FK** → `track_nodes.id`; `dwell_seconds` integer ≥ 0. | Ordered path, including repeated nodes and manual platform/Yard dwell. |
 
-Start/dwell/path are stored; platform/Yard arrival/departure, block intervals, battery and conflicts are derived by the domain engine. A small complete scenario is loaded and evaluated under its schedule-row lock. Shared fleet/configuration mutations lock manual then auto, revalidate both and advance both revisions. This keeps revision/status and data consistent in one transaction, but coarse-grained whole-scenario evaluation limits write throughput; no large-fleet performance guarantee is made. We chose a pure domain layer over encoding cross-service battery and scheduling logic in SQL so generator trials and unit tests can reuse the same rules without a database. FK/CHECK constraints still protect basic data integrity.
+All columns above are `NOT NULL` except `track_nodes.station_id`. The migrations seed **21 nodes, 28 directed edges, three interlocking groups and 14 block configurations**. The SVG is presentation only; the DB is the topology source. Ordered step rows rather than a path JSON blob preserve each visit's position and node FK.
+
+For a service, the stored scheduling inputs are start time, ordered path and dwell (alongside IDs and the legacy flag); there are no separate visit, battery, occupancy or conflict tables. The domain engine derives platform/Yard arrival/departure, block intervals, battery and conflicts. DB constraints cover keys and basic value ranges, but **not** directed path validity, allowed endpoint/dwell node types, resource overlap, vehicle continuity or battery: the same domain validator checks those for preview and mutations.
+
+A small complete scenario is loaded and evaluated under its schedule-row lock. Shared fleet/configuration mutations lock manual then auto, revalidate both and advance both revisions. This keeps revision/status and data consistent in one transaction, but coarse-grained whole-scenario evaluation limits write throughput; no large-fleet performance guarantee is made. We chose a pure domain layer over encoding cross-service battery and scheduling logic in SQL so generator trials and unit tests can reuse the same rules without a database.
 
 ## API overview
 
