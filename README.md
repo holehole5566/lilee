@@ -47,11 +47,17 @@ A single FastAPI application uses SQLAlchemy/PostgreSQL for persistence and a pu
 | `services` | `id` generated integer **PK**; `schedule_id` **FK** → `schedule.id` (indexed, delete restricted); `vehicle_id` **FK** → `vehicles.id` (delete restricted); `start_at` timestamptz; `is_passenger_service` boolean. | A vehicle run in one scenario. The boolean is a legacy compatibility column; new services always allow boarding at visited platforms. |
 | `service_steps` | `service_id` **FK** → `services.id` (cascade delete), `sequence_index` integer ≥ 0: composite **PK**; `node_id` **FK** → `track_nodes.id`; `dwell_seconds` integer ≥ 0. | Ordered path, including repeated nodes and manual platform/Yard dwell. |
 
-All columns above are `NOT NULL` except `track_nodes.station_id`. The migrations seed **21 nodes, 28 directed edges, three interlocking groups and 14 block configurations**. The SVG is presentation only; the DB is the topology source. Ordered step rows rather than a path JSON blob preserve each visit's position and node FK.
+All columns above are `NOT NULL` except `track_nodes.station_id`. The migrations seed **21 nodes, 28 directed edges, three interlocking groups and 14 block configurations**. The SVG is presentation only; the DB is the topology source.
 
 For a service, the stored scheduling inputs are start time, ordered path and dwell (alongside IDs and the legacy flag); there are no separate visit, battery, occupancy or conflict tables. The domain engine derives platform/Yard arrival/departure, block intervals, battery and conflicts. DB constraints cover keys and basic value ranges, but **not** directed path validity, allowed endpoint/dwell node types, resource overlap, vehicle continuity or battery: the same domain validator checks those for preview and mutations.
 
 A small complete scenario is loaded and evaluated under its schedule-row lock. Shared fleet/configuration mutations lock manual then auto, revalidate both and advance both revisions. This keeps revision/status and data consistent in one transaction, but coarse-grained whole-scenario evaluation limits write throughput; no large-fleet performance guarantee is made. We chose a pure domain layer over encoding cross-service battery and scheduling logic in SQL so generator trials and unit tests can reuse the same rules without a database.
+
+### Data-model trade-off: ordered step rows vs JSONB
+
+We chose one `service_steps` row per path visit, keyed by `(service_id, sequence_index)`, rather than storing the whole path as JSONB on `services`. Rows preserve order and repeated visits, and `node_id` has a normal FK: deleting or renaming a referenced node ID cannot silently leave a dangling step. This also makes individual steps queryable with SQL. The cost is more rows and a join to load a path; updating a service currently validates the proposed schedule, then deletes and reinserts that service's steps in one transaction instead of patching individual positions.
+
+JSONB would make storing and replacing a whole path simpler, and PostgreSQL can query and index JSONB. But individual node IDs inside a JSONB array cannot use an ordinary column FK; they would need application validation or extra database logic. **Neither approach's FK proves a directed path is valid**: adjacency, endpoint, timing and conflict rules stay in the domain validator. For this small fixed graph, explicit node references and a clear visit order were worth the extra table.
 
 ## API overview
 
